@@ -8,27 +8,17 @@ use log::debug;
 use reqwest::Client;
 use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 
-use crate::{
-    exchange::{
-        actions::{
-            ApproveAgent, ApproveBuilderFee, BulkCancel, BulkModify, BulkOrder, ClaimRewards,
-            EvmUserModify, ScheduleCancel, SetReferrer, UpdateIsolatedMargin, UpdateLeverage,
-            UsdSend,
-        },
-        cancel::{CancelRequest, CancelRequestCloid, ClientCancelRequestCloid},
-        modify::{ClientModifyRequest, ModifyRequest},
-        order::{MarketCloseParams, MarketOrderParams},
-        BuilderInfo, ClientCancelRequest, ClientLimit, ClientOrder, ClientOrderRequest,
+use crate::{exchange::{
+    actions::{
+        ApproveAgent, ApproveBuilderFee, BulkCancel, BulkModify, BulkOrder, ClaimRewards,
+        EvmUserModify, ScheduleCancel, SetReferrer, UpdateIsolatedMargin, UpdateLeverage,
+        UsdSend,
     },
-    helpers::{next_nonce, uuid_to_hex_string},
-    info::info_client::InfoClient,
-    meta::Meta,
-    prelude::*,
-    req::HttpClient,
-    signature::{sign_l1_action, sign_typed_data},
-    BaseUrl, BulkCancelCloid, ClassTransfer, Error, ExchangeResponseStatus, SpotSend, SpotUser,
-    VaultTransfer, Withdraw3,
-};
+    cancel::{CancelRequest, CancelRequestCloid, ClientCancelRequestCloid},
+    modify::{ClientModifyRequest, ModifyRequest},
+    order::{MarketCloseParams, MarketOrderParams},
+    BuilderInfo, ClientCancelRequest, ClientLimit, ClientOrder, ClientOrderRequest,
+}, helpers::{next_nonce, uuid_to_hex_string}, info::info_client::InfoClient, meta::Meta, prelude::*, req::HttpClient, signature::{sign_l1_action, sign_typed_data}, BaseUrl, BulkCancelCloid, ClassTransfer, ClientTrigger, Error, ExchangeResponseStatus, SpotSend, SpotUser, VaultTransfer, Withdraw3};
 
 #[derive(Debug)]
 pub struct ExchangeClient {
@@ -436,6 +426,71 @@ impl ExchangeClient {
             .await
     }
 
+    pub async fn order_with_tp_sl(
+        &self,
+        order: ClientOrderRequest,
+        wallet: Option<&PrivateKeySigner>,
+        take_profit: f64,
+        stop_loss: f64,
+        slippage: f64
+    ) -> Result<ExchangeResponseStatus> {
+        let (tp_px, sz_decimals) = self
+            .calculate_slippage_price(&order.asset, !order.is_buy, slippage, Some(take_profit))
+            .await?;
+        let tp_order = ClientOrderRequest {
+            asset: order.asset.clone(),
+            is_buy: !order.is_buy,
+            reduce_only: true,
+            limit_px: tp_px,
+            sz: order.sz,
+            cloid: None,
+            order_type: ClientOrder::Trigger(ClientTrigger{
+                is_market: true,
+                trigger_px: take_profit,
+                tpsl: "tp".to_string(),
+            }),
+        };
+
+        let (sl_px, sz_decimals) = self
+            .calculate_slippage_price(&order.asset, !order.is_buy, slippage, Some(stop_loss))
+            .await?;
+        let sl_order = ClientOrderRequest {
+            asset: order.asset.clone(),
+            is_buy: !order.is_buy,
+            reduce_only: true,
+            limit_px: sl_px,
+            sz: order.sz,
+            cloid: None,
+            order_type: ClientOrder::Trigger(ClientTrigger{
+                is_market: true,
+                trigger_px: take_profit,
+                tpsl: "sl".to_string(),
+            }),
+        };
+        
+        let orders = vec![order, tp_order, sl_order];
+        let wallet = wallet.unwrap_or(&self.wallet);
+        let timestamp = next_nonce();
+
+        let mut transformed_orders = Vec::new();
+
+        for order in orders {
+            transformed_orders.push(order.convert(&self.coin_to_asset)?);
+        }
+
+        let action = Actions::Order(BulkOrder {
+            orders: transformed_orders,
+            grouping: "normalTpsl".to_string(),
+            builder: None,
+        });
+        let connection_id = action.hash(timestamp, self.vault_address)?;
+        let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
+
+        let is_mainnet = self.http_client.is_mainnet();
+        let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
+        self.post(action, signature, timestamp).await
+    }
+
     pub async fn bulk_order(
         &self,
         orders: Vec<ClientOrderRequest>,
@@ -484,33 +539,6 @@ impl ExchangeClient {
             orders: transformed_orders,
             grouping: "na".to_string(),
             builder: Some(builder),
-        });
-        let connection_id = action.hash(timestamp, self.vault_address)?;
-        let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
-
-        let is_mainnet = self.http_client.is_mainnet();
-        let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
-        self.post(action, signature, timestamp).await
-    }
-    
-    pub async fn bulk_order_tp_sl(
-        &self,
-        orders: Vec<ClientOrderRequest>,
-        wallet: Option<&PrivateKeySigner>,
-    ) -> Result<ExchangeResponseStatus> {
-        let wallet = wallet.unwrap_or(&self.wallet);
-        let timestamp = next_nonce();
-
-        let mut transformed_orders = Vec::new();
-
-        for order in orders {
-            transformed_orders.push(order.convert(&self.coin_to_asset)?);
-        }
-
-        let action = Actions::Order(BulkOrder {
-            orders: transformed_orders,
-            grouping: "normalTpsl".to_string(),
-            builder: None,
         });
         let connection_id = action.hash(timestamp, self.vault_address)?;
         let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
