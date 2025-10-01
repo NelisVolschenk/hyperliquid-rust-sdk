@@ -463,7 +463,7 @@ impl ExchangeClient {
             cloid: None,
             order_type: ClientOrder::Trigger(ClientTrigger{
                 is_market: true,
-                trigger_px: take_profit,
+                trigger_px: stop_loss,
                 tpsl: "sl".to_string(),
             }),
         };
