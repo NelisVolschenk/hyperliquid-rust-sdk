@@ -914,6 +914,7 @@ fn round_to_decimals(value: f64, decimals: u32) -> f64 {
 fn round_to_significant_and_decimal(value: f64, sig_figs: u32, max_decimals: u32) -> f64 {
     let abs_value = value.abs();
     let magnitude = abs_value.log10().floor() as i32;
+    if magnitude >= sig_figs as i32 {return value.round()}
     let scale = 10f64.powi(sig_figs as i32 - magnitude - 1);
     let rounded = (abs_value * scale).round() / scale;
     round_to_decimals(rounded.copysign(value), max_decimals)
