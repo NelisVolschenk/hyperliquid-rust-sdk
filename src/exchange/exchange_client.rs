@@ -7,7 +7,7 @@ use alloy::{
 use log::debug;
 use reqwest::Client;
 use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
-
+use uuid::Uuid;
 use crate::{exchange::{
     actions::{
         ApproveAgent, ApproveBuilderFee, BulkCancel, BulkModify, BulkOrder, ClaimRewards,
@@ -407,6 +407,31 @@ impl ExchangeClient {
         debug!("px after slippage: {px:?}");
         Ok((px, sz_decimals))
     }
+    
+    fn validate_order(&self, mut order: ClientOrderRequest) -> Result<ClientOrderRequest> {
+        let asset_meta = self.meta
+            .universe
+            .iter()
+            .find(|a| a.name == order.asset)
+            .ok_or(Error::AssetNotFound)?;
+        let sz_decimals = asset_meta.sz_decimals;
+        let max_decimals: u32 = if self.coin_to_asset[&order.asset] < 10000 {
+            6
+        } else {
+            8
+        };
+        let price_decimals = max_decimals.saturating_sub(sz_decimals);
+        order.sz = round_to_decimals(order.sz, sz_decimals);
+        order.limit_px = round_to_significant_and_decimal(order.limit_px, 5, price_decimals);
+        order.order_type = match order.order_type {
+            ClientOrder::Limit(limit) => {ClientOrder::Limit(limit)}
+            ClientOrder::Trigger(mut trigger) => {
+                trigger.trigger_px = round_to_significant_and_decimal(trigger.trigger_px, 5, price_decimals);
+                ClientOrder::Trigger(trigger)
+            }
+        };
+        Ok(order)
+    }
 
     pub async fn order(
         &self,
@@ -468,14 +493,15 @@ impl ExchangeClient {
             }),
         };
         
-        let orders = vec![order, tp_order, sl_order];
+        let mut orders = vec![order, tp_order, sl_order];
         let wallet = wallet.unwrap_or(&self.wallet);
         let timestamp = next_nonce();
 
         let mut transformed_orders = Vec::new();
 
         for order in orders {
-            transformed_orders.push(order.convert(&self.coin_to_asset)?);
+            let validated_order = self.validate_order(order)?;
+            transformed_orders.push(validated_order.convert(&self.coin_to_asset)?);
         }
 
         let action = Actions::Order(BulkOrder {
