@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use alloy::primitives::Address;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::Leverage;
 
@@ -93,22 +93,27 @@ pub struct CandleData {
     #[serde(rename = "T")]
     pub time_close: u64,
     #[serde(rename = "c")]
+    #[serde(deserialize_with = "deserialize_string_to_f64")]
     pub close: f64,
     #[serde(rename = "h")]
+    #[serde(deserialize_with = "deserialize_string_to_f64")]
     pub high: f64,
     #[serde(rename = "i")]
     pub interval: String,
     #[serde(rename = "l")]
+    #[serde(deserialize_with = "deserialize_string_to_f64")]
     pub low: f64,
     #[serde(rename = "n")]
     pub num_trades: u64,
     #[serde(rename = "o")]
+    #[serde(deserialize_with = "deserialize_string_to_f64")]
     pub open: f64,
     #[serde(rename = "s")]
     pub coin: String,
     #[serde(rename = "t")]
     pub time_open: u64,
     #[serde(rename = "v")]
+    #[serde(deserialize_with = "deserialize_string_to_f64")]
     pub volume: f64,
 }
 
@@ -350,4 +355,12 @@ pub struct BboData {
     pub coin: String,
     pub time: u64,
     pub bbo: Vec<Option<BookLevel>>,
+}
+
+fn deserialize_string_to_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    s.parse::<f64>().map_err(serde::de::Error::custom)
 }
